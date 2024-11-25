@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy a Cognito with a User Pool for the ALB to authenticate to.
+  Deploy this first if you don't already have a Cognito User Pool set up.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Description: Name to be used as a prefix for resources.
+
+Resources:
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${NamePrefix}-user-pool
+      AutoVerifiedAttributes:
+        - email
+      AliasAttributes:
+        - email
+        - preferred_username
+      UsernameConfiguration:
+        CaseSensitive: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: preferred_username
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref CognitoUserPool
+      Domain: !Ref NamePrefix
+
+Outputs:
+  UserPoolId:
+    Value: !Ref CognitoUserPool
+    Description: ID of the Cognito User Pool
+    Export:
+      Name: !Sub ${NamePrefix}-UserPool
+  UserPoolArn:
+    Value: !GetAtt CognitoUserPool.Arn
+    Description: ARN of the Cognito User Pool
+    Export:
+      Name: !Sub ${NamePrefix}-UserPoolArn
+  CognitoDomain:
+    Value: !Sub ${NamePrefix}.auth.${AWS::Region}.amazoncognito.com
+    Description: Cognito hosted UI domain
+    Export:
+      Name: !Sub ${NamePrefix}-UserPoolDomain

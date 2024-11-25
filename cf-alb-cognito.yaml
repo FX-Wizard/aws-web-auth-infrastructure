@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation Template to deploy a secure portal with ALB and EC2 in a private subnet using Cognito for authentication.
+
+Parameters:
+  NamePrefix:
+    Type: String
+    Description: Name to be used as a prefix for resources.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select an existing VPC
+  
+  PublicSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Select at least 2 or more public subnets for the ALB
+
+  TargetInstance:
+    Type: AWS::EC2::Instance::Id
+    Description: Select an existing EC2 instance as a target for the portal
+
+  TargetPort:
+    Type: Number
+    Description: Port number of the EC2 instance web server
+    Default: 80
+    MinValue: 1
+    MaxValue: 65535
+
+  HostedZoneName:
+    Type: String
+    Description: Enter the hosted zone name for the ALB
+
+  HostedZoneId:
+    Type: String
+    Description: Enter the hosted zone id for the ALB
+
+  SubDomainName:
+    Type: String
+    Description: Enter the subdomain name for the ALB
+
+  CognitoUserPoolDomain:
+    Type: String
+    Description: Enter the Cognito User Pool Domain Name
+
+  CognitoUserPoolId:
+    Type: String
+    Description: Enter the Cognito User Pool ID
+
+  CognitoUserPoolARN:
+    Type: String
+    Description: Enter the Cognito User Pool ARN
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Basic Settings"
+        Parameters:
+          - NamePrefix
+      - Label:
+          default: "Network Configuration"
+        Parameters:
+          - VpcId
+          - PublicSubnets
+          - TargetInstance
+          - TargetPort
+      - Label:
+          default: "DNS settings"
+        Parameters:
+          - HostedZoneName
+          - HostedZoneId
+          - SubDomainName
+      - Label:
+          default: "Cognito Details"
+        Parameters:
+          - CognitoUserPoolDomain
+          - CognitoUserPoolId
+          - CognitoUserPoolARN
+    ParameterLabels:
+      NamePrefix:
+        default: "Resource Name Prefix"
+      VpcId:
+        default: "VPC"
+      PublicSubnets:
+        default: "Public Subnets"
+      TargetInstance:
+        default: "Target EC2 Instance"
+      TargetPort:
+        default: "Target Port"
+      HostedZoneName:
+        default: "Route 53 Hosted Zone Name"
+      HostedZoneId:
+        default: "Route 53 Hosted Zone ID"
+      SubDomainName:
+        default: "Subdomain Name"
+      CognitoUserPoolDomain:
+        default: "Cognito User Pool Domain"
+      CognitoUserPoolId:
+        default: "Cognito User Pool ID"
+      CognitoUserPoolARN:
+        default: "Cognito User Pool ARN"
+
+Resources:
+  # Security Group for ALB
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and HTTPS traffic to ALB.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: Name
+          Value: !Sub ${NamePrefix}-alb-sg
+        - Key: Deployed by stack
+          Value: AWS::StackName
+
+  # Security Group for Web Server Instance
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB SG to web server.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref TargetPort
+          ToPort: !Ref TargetPort
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${NamePrefix}-webserver-sg
+        - Key: Deployed by stack
+          Value: AWS::StackName
+    
+  # Cognito User Pool Client
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUserPoolId  # You'll need to add this as a parameter
+      ClientName: !Sub ${NamePrefix}-alb-client
+      GenerateSecret: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - !Sub https://${SubDomainName}.${HostedZoneName}/oauth2/idpresponse
+      SupportedIdentityProviders:
+        - COGNITO
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub ${SubDomainName}.${HostedZoneName}
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub ${SubDomainName}.${HostedZoneName}
+          HostedZoneId: !Ref HostedZoneId
+
+  # Application Load Balancer (ALB)
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Join ['', [!Ref NamePrefix, '-Load-Balancer']]
+      Subnets: !Ref PublicSubnets
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Type: A
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub ${SubDomainName}.${HostedZoneName}
+      AliasTarget:
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID # ALB's hosted zone ID
+        DNSName: !GetAtt LoadBalancer.DNSName
+        EvaluateTargetHealth: False
+
+  # Target Group for ALB
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup 
+    Properties:
+      Name: !Join ['', [!Ref NamePrefix, '-Target-Group']]
+      VpcId: !Ref VpcId 
+      Protocol: HTTP
+      Port: !Ref TargetPort
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: !Ref TargetPort
+      HealthCheckPath: /
+      TargetType: instance
+      Targets:
+        - Id: !Ref TargetInstance
+          Port: !Ref TargetPort
+      
+  # Listener for ALB
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref Certificate
+      DefaultActions:
+        - Type: authenticate-cognito
+          Order: 1
+          AuthenticateCognitoConfig:
+            UserPoolArn: !Ref CognitoUserPoolARN
+            UserPoolClientId: !Ref UserPoolClient
+            UserPoolDomain: !Ref CognitoUserPoolDomain
+            Scope: openid
+            OnUnauthenticatedRequest: authenticate
+            SessionCookieName: AWSELBAuthSessionCookie
+        - Type: forward 
+          Order: 2
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ApplicationURL:
+    Description: Application URL
+    Value: !Sub https://${SubDomainName}.${HostedZoneName}
+  LoadBalancerDNSName:
+    Description: DNS name of the Load Balancer
+    Value: !GetAtt LoadBalancer.DNSName
+
